@@ -30,7 +30,7 @@ object Main extends App with SprayJsonSupport with DefaultJsonProtocol {
   implicit val jsonStreamingSupport: JsonEntityStreamingSupport = EntityStreamingSupport.json()
   implicit val format = jsonFormat1(ImageProcessed.apply)
 
-  val (wsQueue, wsSource) = Source.actorRef[StatusMessage](15, OverflowStrategy.dropTail).preMaterialize()
+  val (wsActor, wsSource) = Source.actorRef[StatusMessage](32, OverflowStrategy.fail).preMaterialize()
 
   def wsStatusFlow(uuid: String): Flow[Message, Message, Any] =
     Flow
@@ -45,7 +45,7 @@ object Main extends App with SprayJsonSupport with DefaultJsonProtocol {
     .map(bi => {
       val info = s"Processing Stage: ${stageNum}"
       println(info)
-      wsQueue ! StatusMessage(uuid, TextMessage(info))
+      wsActor ! StatusMessage(uuid, TextMessage(info))
       bi
     })
     .withAttributes(ActorAttributes.supervisionStrategy(Supervision.resumingDecider))
@@ -56,7 +56,7 @@ object Main extends App with SprayJsonSupport with DefaultJsonProtocol {
       .via(processStage(3, uuid))
       .via(processStage(4, uuid))
       .map(_ => {
-        wsQueue ! StatusMessage(uuid, TextMessage("Finished"))
+        wsActor ! StatusMessage(uuid, TextMessage("Finished"))
         ImageProcessed("Complete!")
       })
       .withAttributes(ActorAttributes.supervisionStrategy(Supervision.resumingDecider))
