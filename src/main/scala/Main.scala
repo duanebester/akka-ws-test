@@ -30,7 +30,7 @@ object Main extends App with SprayJsonSupport with DefaultJsonProtocol {
   implicit val jsonStreamingSupport: JsonEntityStreamingSupport = EntityStreamingSupport.json()
   implicit val format = jsonFormat1(ImageProcessed.apply)
 
-  val (wsActor, wsSource) = Source.actorRef[StatusMessage](32, OverflowStrategy.fail).preMaterialize()
+  val (wsActor, wsSource) = Source.actorRef[StatusMessage](32, OverflowStrategy.dropNew).preMaterialize()
 
   def wsStatusFlow(uuid: String): Flow[Message, Message, Any] =
     Flow
