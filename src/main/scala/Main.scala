@@ -6,7 +6,6 @@ import akka.stream.scaladsl.{ Flow, Sink, Source }
 import akka.http.scaladsl.model.ws.{ Message, TextMessage }
 import scala.language.postfixOps
 import akka.stream.OverflowStrategy
-import akka.stream.scaladsl.StreamConverters
 import akka.http.scaladsl.model.StatusCodes
 import scala.concurrent.ExecutionContextExecutor
 import scala.concurrent.duration._
@@ -17,8 +16,6 @@ import akka.http.scaladsl.common.EntityStreamingSupport
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport
 import spray.json.DefaultJsonProtocol
 import akka.NotUsed
-import akka.stream.ActorAttributes
-import akka.stream.Supervision
 
 case class StatusMessage(uuid: String, message: Message)
 case class ImageProcessed(status: String)
@@ -33,14 +30,17 @@ object Main extends App with SprayJsonSupport with DefaultJsonProtocol {
   val (wsActor, wsSource) = Source.actorRef[StatusMessage](32, OverflowStrategy.dropNew).preMaterialize()
 
   def wsStatusFlow(uuid: String): Flow[Message, Message, Any] =
-    Flow
-      .fromSinkAndSource(
-        Sink.ignore,
-        wsSource.filter(statusMessage => statusMessage.uuid == uuid).map(statusMessage => statusMessage.message)
-      )
-      .withAttributes(ActorAttributes.supervisionStrategy(Supervision.resumingDecider))
+    Flow.fromSinkAndSource(
+      Sink.ignore,
+      wsSource
+        .filter(statusMessage => statusMessage.uuid == uuid)
+        .map(statusMessage => {
+          println(statusMessage)
+          statusMessage.message
+        })
+    )
 
-  def processStage(stageNum: Int, uuid: String) = Flow[BufferedImage]
+  def processStage(stageNum: Int, uuid: String) = Flow[BufferedImage].async
     .delay(1 seconds)
     .map(bi => {
       val info = s"Processing Stage: ${stageNum}"
@@ -48,7 +48,6 @@ object Main extends App with SprayJsonSupport with DefaultJsonProtocol {
       wsActor ! StatusMessage(uuid, TextMessage(info))
       bi
     })
-    .withAttributes(ActorAttributes.supervisionStrategy(Supervision.resumingDecider))
 
   def processImageFlow(uuid: String): Flow[BufferedImage, ImageProcessed, NotUsed] =
     processStage(1, uuid)
@@ -59,7 +58,8 @@ object Main extends App with SprayJsonSupport with DefaultJsonProtocol {
         wsActor ! StatusMessage(uuid, TextMessage("Finished"))
         ImageProcessed("Complete!")
       })
-      .withAttributes(ActorAttributes.supervisionStrategy(Supervision.resumingDecider))
+
+  def processImage(bi: BufferedImage, uuid: String) = Source.single(bi).via(processImageFlow(uuid)).runWith(Sink.ignore)
 
   val uploadRoute =
     pathPrefix("image") {
@@ -69,12 +69,11 @@ object Main extends App with SprayJsonSupport with DefaultJsonProtocol {
         }
       } ~ path(Segment / "upload") { uuid: String =>
         post {
-          fileUpload("fileUpload") {
-            case (_, fileStream) =>
-              val inputStream = fileStream.runWith(StreamConverters.asInputStream())
-              val image = ImageIO.read(inputStream)
-              val processed = Source.single(image).via(processImageFlow(uuid))
-              complete(processed)
+          uploadedFile("fileUpload") {
+            case (_, file) =>
+              val image = ImageIO.read(file)
+              processImage(image, uuid)
+              complete(StatusCodes.OK)
           }
         }
       }
